@@ -4,7 +4,7 @@ use crate::metastore::table::Table;
 use crate::metastore::{Column, ColumnType, IdRow, Index, Partition};
 use crate::queryplanner::optimizations::CubeQueryPlanner;
 use crate::queryplanner::planning::get_worker_plan;
-use crate::queryplanner::serialized_plan::{IndexSnapshot, SerializedPlan};
+use crate::queryplanner::serialized_plan::{IndexSnapshot, PartitionSnapshot, SerializedPlan};
 use crate::store::DataFrame;
 use crate::table::{Row, TableValue, TimestampValue};
 use crate::{app_metrics, CubeError};
@@ -21,6 +21,7 @@ use arrow::ipc::writer::MemStreamWriter;
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use core::fmt;
+use datafusion::cube_ext::sequence::SequenceExec;
 use datafusion::datasource::datasource::{Statistics, TableProviderFilterPushDown};
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
@@ -33,6 +34,7 @@ use datafusion::physical_plan::memory::MemoryExec;
 use datafusion::physical_plan::merge::MergeExec;
 use datafusion::physical_plan::merge_sort::MergeSortExec;
 use datafusion::physical_plan::parquet::ParquetExec;
+use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{
     collect, ExecutionPlan, OptimizerHints, Partitioning, SendableRecordBatchStream,
 };
@@ -41,7 +43,7 @@ use log::{debug, error, trace, warn};
 use mockall::automock;
 use serde_derive::{Deserialize, Serialize};
 use std::any::Any;
-use std::cmp::min;
+use std::cmp::{min, Ordering};
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
 use std::io::Cursor;
@@ -297,9 +299,6 @@ impl CubeTable {
     ) -> Result<Arc<dyn ExecutionPlan>, CubeError> {
         let table = self.index_snapshot.table();
         let index = self.index_snapshot.index();
-        let partition_snapshots = self.index_snapshot.partitions();
-
-        let mut partition_execs = Vec::<Arc<dyn ExecutionPlan>>::new();
 
         let mapped_projection = projection.as_ref().map(|p| {
             CubeTable::project_to_index_positions(&CubeTable::project_to_table(&table, p), &index)
@@ -307,9 +306,10 @@ impl CubeTable {
                 .map(|i| i.unwrap())
                 .collect::<Vec<_>>()
         });
-
         let predicate = combine_filters(filters);
-        for partition_snapshot in partition_snapshots {
+
+        let mut partition_execs = Vec::<Arc<dyn ExecutionPlan>>::new();
+        for partition_snapshot in ordered_partitions(&self.index_snapshot) {
             if !self
                 .worker_partition_ids
                 .contains(&partition_snapshot.partition().get_id())
@@ -318,39 +318,51 @@ impl CubeTable {
             }
             let partition = partition_snapshot.partition();
 
-            if let Some(remote_path) = partition.get_row().get_full_name(partition.get_id()) {
-                let local_path = self
-                    .remote_to_local_names
-                    .get(remote_path.as_str())
-                    .expect(format!("Missing remote path {}", remote_path).as_str());
-                let arc: Arc<dyn ExecutionPlan> = Arc::new(ParquetExec::try_from_path(
-                    &local_path,
-                    mapped_projection.clone(),
-                    predicate.clone(),
-                    batch_size,
-                    1,
-                    None, // TODO: propagate limit
-                )?);
-                partition_execs.push(arc);
-            }
-
-            let chunks = partition_snapshot.chunks();
-            for chunk in chunks {
+            let mut chunks =
+                Vec::<Arc<dyn ExecutionPlan>>::with_capacity(1 + partition_snapshot.chunks().len());
+            for chunk in partition_snapshot.chunks() {
                 let remote_path = chunk.get_row().get_full_name(chunk.get_id());
                 let local_path = self
                     .remote_to_local_names
                     .get(&remote_path)
                     .expect(format!("Missing remote path {}", remote_path).as_str());
-                let node = Arc::new(ParquetExec::try_from_path(
+                chunks.push(Arc::new(ParquetExec::try_from_path(
                     local_path,
                     mapped_projection.clone(),
                     predicate.clone(),
                     batch_size,
                     1,
                     None, // TODO: propagate limit
-                )?);
-                partition_execs.push(node);
+                )?));
             }
+
+            if let Some(remote_path) = partition.get_row().get_full_name(partition.get_id()) {
+                let local_path = self
+                    .remote_to_local_names
+                    .get(remote_path.as_str())
+                    .expect(format!("Missing remote path {}", remote_path).as_str());
+                chunks.push(Arc::new(ParquetExec::try_from_path(
+                    &local_path,
+                    mapped_projection.clone(),
+                    predicate.clone(),
+                    batch_size,
+                    1,
+                    None, // TODO: propagate limit
+                )?))
+            }
+
+            if chunks.len() == 1 {
+                partition_execs.extend(chunks);
+                continue; // next partition.
+            }
+            // `prefer_inplace_aggregate` optimization relies on this layout.
+            // Make sure you take great care if you change anything here.
+            let inner = Arc::new(UnionExec::new(chunks));
+            let m: Arc<dyn ExecutionPlan> = match &self.index_snapshot.sort_on {
+                None => Arc::new(MergeExec::new(inner)),
+                Some(sort_on) => Arc::new(MergeSortExec::try_new(inner, sort_on.clone())?),
+            };
+            partition_execs.push(m);
         }
 
         if partition_execs.len() == 0 {
@@ -371,17 +383,16 @@ impl CubeTable {
         };
 
         let schema = projected_schema.to_dfschema_ref()?;
-        let plan: Arc<dyn ExecutionPlan> = if let Some(join_columns) = self.index_snapshot.sort_on()
-        {
-            Arc::new(MergeSortExec::try_new(
-                Arc::new(CubeTableExec {
-                    schema,
-                    partition_execs,
-                    index_snapshot: self.index_snapshot.clone(),
-                    filter: predicate,
-                }),
-                join_columns.clone(),
-            )?)
+        let plan: Arc<dyn ExecutionPlan> = if self.index_snapshot.sort_on().is_some() {
+            // CubeTableExec is the outer to report correct `output_hints`.
+            Arc::new(CubeTableExec {
+                schema,
+                partition_execs: vec![Arc::new(SequenceExec {
+                    input: Arc::new(UnionExec::new(partition_execs)),
+                })],
+                index_snapshot: self.index_snapshot.clone(),
+                filter: predicate,
+            })
         } else {
             Arc::new(MergeExec::new(Arc::new(CubeTableExec {
                 schema,
@@ -984,4 +995,30 @@ fn slice_copy(a: &dyn Array, start: usize, len: usize) -> Result<ArrayRef, CubeE
         &UInt64Array::from_iter_values(start as u64..(start + len) as u64),
         None,
     )?)
+}
+
+fn ordered_partitions(index: &IndexSnapshot) -> Vec<&PartitionSnapshot> {
+    let mut partition_snapshots = index
+        .partitions()
+        .iter()
+        .filter(|p| {
+            !p.chunks.is_empty()
+                || p.partition
+                    .get_row()
+                    .get_full_name(p.partition.get_id())
+                    .is_some()
+        })
+        .collect_vec();
+    let sort_key_size = index.index.get_row().sort_key_size();
+    partition_snapshots.sort_unstable_by(|l, r| {
+        let l = l.partition.get_row().get_min_val();
+        let r = r.partition.get_row().get_min_val();
+        match (l, r) {
+            (None, None) => Ordering::Equal,
+            (None, _) => Ordering::Less,
+            (_, None) => Ordering::Greater,
+            (Some(l), Some(r)) => l.sort_key(sort_key_size).cmp(&r.sort_key(sort_key_size)),
+        }
+    });
+    partition_snapshots
 }

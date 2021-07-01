@@ -1,5 +1,6 @@
 use crate::queryplanner::planning::WorkerExec;
-use crate::queryplanner::query_executor::ClusterSendExec;
+use crate::queryplanner::query_executor::{ClusterSendExec, CubeTableExec};
+use datafusion::cube_ext::sequence::SequenceExec;
 use datafusion::error::DataFusionError;
 use datafusion::physical_plan::alias::AliasedSchemaExec;
 use datafusion::physical_plan::filter::FilterExec;
@@ -61,16 +62,26 @@ fn try_regroup_columns(
         return p.with_new_children(
             p.children()
                 .into_iter()
-                .map(|c| try_regroup_columns(c))
-                .collect::<Result<_, DataFusionError>>()?,
+                .map(try_regroup_columns)
+                .collect::<Result<_, _>>()?,
         );
     }
 
-    let merge;
-    if let Some(m) = p.as_any().downcast_ref::<MergeExec>() {
-        merge = m;
-    } else {
-        return Ok(p);
+    let merge = match p.as_any().downcast_ref::<MergeExec>() {
+        Some(m) => m,
+        _ => return Ok(p),
+    };
+
+    // Special case - merged partitions of the same table. This is more efficient than merge sort.
+    if let Some(t) = merge.input().as_any().downcast_ref::<CubeTableExec>() {
+        let input = Arc::new(UnionExec::new(
+            t.children()
+                .into_iter()
+                .map(try_regroup_columns)
+                .collect::<Result<Vec<_>, _>>()?,
+        ));
+        let input = Arc::new(SequenceExec { input });
+        return t.with_new_children(vec![input]);
     }
 
     let input = try_regroup_columns(merge.input().clone())?;
