@@ -22,7 +22,7 @@ use crate::config::injection::DIService;
 use crate::config::ConfigObj;
 use crate::import::limits::ConcurrencyLimits;
 use crate::metastore::table::Table;
-use crate::metastore::{is_valid_hll, IdRow};
+use crate::metastore::{is_valid_binary_hll_input, HllFlavour, IdRow};
 use crate::metastore::{Column, ColumnType, ImportFormat, MetaStore};
 use crate::remotefs::RemoteFs;
 use crate::sql::timestamp_from_string;
@@ -33,6 +33,8 @@ use crate::util::decimal::Decimal;
 use crate::util::maybe_owned::MaybeOwnedStr;
 use crate::util::ordfloat::OrdF64;
 use crate::CubeError;
+use cubehll::HllSketch;
+use datafusion::cube_ext;
 use num::ToPrimitive;
 use std::convert::TryFrom;
 use tempfile::TempPath;
@@ -123,10 +125,14 @@ impl ImportFormat {
                                         )?)
                                     }
                                     ColumnType::Bytes => TableValue::Bytes(base64::decode(value)?),
+                                    ColumnType::HyperLogLog(HllFlavour::Snowflake) => {
+                                        let hll = HllSketch::read_snowflake(value)?;
+                                        TableValue::Bytes(hll.write())
+                                    }
                                     ColumnType::HyperLogLog(f) => {
+                                        assert!(f.imports_from_binary());
                                         let data = base64::decode(value)?;
-                                        is_valid_hll(&data, *f)?;
-
+                                        is_valid_binary_hll_input(&data, *f)?;
                                         TableValue::Bytes(data)
                                     }
                                     ColumnType::Timestamp => {
@@ -556,7 +562,7 @@ impl Ingestion {
         let chunk_store = self.chunk_store.clone();
         let columns = self.table.get_row().get_columns().clone().clone();
         let table_id = self.table.get_id();
-        self.partition_jobs.push(tokio::spawn(async move {
+        self.partition_jobs.push(cube_ext::spawn(async move {
             let new_chunks = chunk_store.partition_data(table_id, rows, &columns).await?;
             std::mem::drop(active_data_frame);
 
