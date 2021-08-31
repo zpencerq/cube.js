@@ -40,6 +40,7 @@ These recipes will show you the best practices of using Cube.js.
 ### <--{"id" : "Recipes"}--> Query acceleration
 
 - [Accelerating Non-Additive Measures](/recipes/non-additivity)
+- [Incrementally building pre-aggregations for a date range](/recipes/incrementally-building-pre-aggregations-for-a-date-range)
 
 ### <--{"id" : "Recipes"}--> Code reusability
 
