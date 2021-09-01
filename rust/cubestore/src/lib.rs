@@ -54,6 +54,7 @@ pub mod sys;
 pub mod table;
 pub mod telemetry;
 pub mod util;
+pub mod validation;
 
 pub use datafusion::cube_ext::spawn;
 pub use datafusion::cube_ext::spawn_blocking;
