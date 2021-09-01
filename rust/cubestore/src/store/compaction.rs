@@ -6,6 +6,7 @@ use crate::store::ChunkDataStore;
 use crate::table::data::{cmp_row_key, RowsView, TableValueR};
 use crate::table::parquet::ParquetTableStore;
 use crate::table::TableStore;
+use crate::validation::validate_chunk;
 use crate::CubeError;
 use async_trait::async_trait;
 use datafusion::cube_ext;
@@ -112,6 +113,7 @@ impl CompactionService for CompactionServiceImpl {
         }
 
         let new_partition_file_names = new_partition_local_files.clone();
+        let sort_key_size = index.get_row().sort_key_size() as usize;
         let count_and_min_max = cube_ext::spawn_blocking(move || {
             let mut merge_buffer = Vec::with_capacity(total_data_rows * num_columns);
             for d in &data {
@@ -134,6 +136,10 @@ impl CompactionService for CompactionServiceImpl {
             )
         })
         .await??;
+
+        for f in &new_partition_local_files {
+            validate_chunk(f.as_str(), sort_key_size as usize).await?;
+        }
 
         let mut filtered_partitions = Vec::new();
 

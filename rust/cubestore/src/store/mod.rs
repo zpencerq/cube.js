@@ -24,6 +24,7 @@ use std::{
 use crate::config::injection::DIService;
 use crate::table::data::{cmp_row_key, cmp_row_key_heap, MutRows, Rows};
 use crate::table::parquet::ParquetTableStore;
+use crate::validation::validate_chunk;
 use arrow::array::{Array, Int64Builder, StringBuilder};
 use arrow::record_batch::RecordBatch;
 use datafusion::cube_ext;
@@ -695,17 +696,15 @@ impl ChunkStore {
         let remote_path = ChunkStore::chunk_file_name(chunk.clone()).clone();
         let local_file = self.remote_fs.temp_upload_path(&remote_path).await?;
         let local_file_copy = local_file.clone();
+        let sort_key_size = index.get_row().sort_key_size() as usize;
         cube_ext::spawn_blocking(move || -> Result<(), CubeError> {
             let parquet = ParquetTableStore::new(index.get_row().clone(), 16384); // TODO config
-            parquet.merge_rows(
-                None,
-                vec![local_file_copy],
-                data.view(),
-                index.get_row().sort_key_size() as usize,
-            )?;
+            parquet.merge_rows(None, vec![local_file_copy], data.view(), sort_key_size)?;
             Ok(())
         })
         .await??;
+
+        validate_chunk(&local_file, sort_key_size).await?;
 
         let fs = self.remote_fs.clone();
         Ok(cube_ext::spawn(async move {
