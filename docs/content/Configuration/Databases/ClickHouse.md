@@ -11,7 +11,7 @@ permalink: /config/databases/clickhouse
 
 ## Setup
 
-### <--{"id" : "Setup"}-->  Manual
+### <--{"id" : "Setup"}--> Manual
 
 Add the following to a `.env` file in your Cube.js project:
 
@@ -33,6 +33,24 @@ CUBEJS_DB_PASS=**********
 | `CUBEJS_DB_USER`                | The username used to connect to the database            | A valid database username |    ✅    |
 | `CUBEJS_DB_PASS`                | The password used to connect to the database            | A valid database password |    ✅    |
 | `CUBEJS_DB_CLICKHOUSE_READONLY` | Whether the ClickHouse user has read-only access or not | `true`, `false`           |    ❌    |
+
+## Pre-Aggregations
+
+| Feature       | Works with read-only mode? | Is default? |
+| ------------- | :------------------------: | :---------: |
+| Batching      |             ✅             |     ✅      |
+| Export Bucket |             -              |      -      |
+
+By default, ClickHouse uses [batching][self-preaggs-batching] to build
+pre-aggregations.
+
+## Batching
+
+No extra configuration is required to configure batching for ClickHouse.
+
+## Export Bucket
+
+ClickHouse does not support export buckets.
 
 ## SSL
 

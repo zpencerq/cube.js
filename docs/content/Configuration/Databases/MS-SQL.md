@@ -11,7 +11,7 @@ permalink: /config/databases/mssql
 
 ## Setup
 
-### <--{"id" : "Setup"}-->  Manual
+### <--{"id" : "Setup"}--> Manual
 
 Add the following to a `.env` file in your Cube.js project:
 
@@ -35,6 +35,24 @@ CUBEJS_DB_PASS=**********
 | `CUBEJS_DB_DOMAIN`   | A domain name within the database to connect to                         | A valid domain name within a MSSQL database |    ❌    |
 | `CUBEJS_DB_SSL`      | If `true`, enables SSL encryption for database connections from Cube.js | `true`, `false`                             |    ❌    |
 
+## Pre-Aggregations
+
+| Feature       | Works with read-only mode? | Is default? |
+| ------------- | :------------------------: | :---------: |
+| Batching      |             ✅             |     ✅      |
+| Export Bucket |             -              |      -      |
+
+By default, MSSQL uses [batching][self-preaggs-batching] to build
+pre-aggregations.
+
+## Batching
+
+No extra configuration is required to configure batching for MSSQL.
+
+## Export Bucket
+
+MSSQL does not support export buckets.
+
 ## SSL
 
 To enable SSL-encrypted connections between Cube.js and MS SQL, set the
@@ -44,7 +62,7 @@ Database][ref-recipe-enable-ssl].
 
 ## Additional Configuration
 
-### <--{"id" : "Additional Configuration"}-->  Windows Authentication
+### <--{"id" : "Additional Configuration"}--> Windows Authentication
 
 To connect to a MSSQL database using Windows Authentication (also sometimes
 known as `trustedConnection`), instantiate the driver with

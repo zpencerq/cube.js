@@ -42,6 +42,24 @@ CUBEJS_DB_PASS=**********
 | `CUBEJS_DB_SNOWFLAKE_PRIVATE_KEY_PATH`          | The path to the private RSA key folder                                                                                                              | A valid path to the private RSA key                        |    ❌    |
 | `CUBEJS_DB_SNOWFLAKE_PRIVATE_KEY_PASS`          | The password for the private RSA key. Only required for encrypted keys                                                                              | A valid password for the encrypted private RSA key         |    ❌    |
 
+## Pre-Aggregations
+
+| Feature       | Works with read-only mode? | Is default? |
+| ------------- | :------------------------: | :---------: |
+| Batching      |             ❌             |     ✅      |
+| Export Bucket |             ❌             |     ❌      |
+
+By default, Snowflake uses [batching][self-preaggs-batching] to build
+pre-aggregations.
+
+## Batching
+
+No extra configuration is required to configure batching for Snowflake.
+
+## Export Bucket
+
+//
+
 ## SSL
 
 Cube.js does not require any additional configuration to enable SSL as Snowflake
