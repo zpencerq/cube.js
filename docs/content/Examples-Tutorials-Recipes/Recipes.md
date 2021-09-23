@@ -42,6 +42,7 @@ These recipes will show you the best practices of using Cube.js.
 
 - [Accelerating Non-Additive Measures](/recipes/non-additivity)
 - [Joining Data from Multiple Data Sources](/recipes/joining-multiple-data-sources)
+- [Optimizing complex cubes](/recipes/optimizing-complex-cubes)
 
 ### <--{"id" : "Recipes"}--> Code reusability
 
